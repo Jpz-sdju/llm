@@ -88,6 +88,31 @@ def texts_to_input_ids(
     return ids_t, mask_t
 
 
+def ids_lists_to_input_ids(
+    tokenizer,
+    ids_list: list[list[int]],
+    *,
+    device: torch.device | None = None,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """多条已 encode 的 id 列表 pad → (B, L), mask (B, L)。用于 random crop 批训练。"""
+    pad_id = tokenizer.pad_token_id
+    max_len = max(len(ids) for ids in ids_list)
+
+    input_ids = []
+    attention_mask = []
+    for ids in ids_list:
+        pad_len = max_len - len(ids)
+        input_ids.append(ids + [pad_id] * pad_len)
+        attention_mask.append([1] * len(ids) + [0] * pad_len)
+
+    ids_t = torch.tensor(input_ids, dtype=torch.long)
+    mask_t = torch.tensor(attention_mask, dtype=torch.long)
+    if device is not None:
+        ids_t = ids_t.to(device)
+        mask_t = mask_t.to(device)
+    return ids_t, mask_t
+
+
 @torch.no_grad()
 def greedy_continue(
     model: ToyLLMWithEmbed,

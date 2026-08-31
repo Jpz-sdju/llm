@@ -1,6 +1,7 @@
 """ToyLLM 唯一入口：TinyNews 多文档 → next-token 预测训练（Pre-RMSNorm）。"""
 
 import random
+import sys
 import time
 from pathlib import Path
 
@@ -8,6 +9,7 @@ import torch
 
 from model_input import (
     ToyLLMWithEmbed,
+    ids_lists_to_input_ids,
     interactive_ask,
     next_token_cross_entropy,
     texts_to_input_ids,
@@ -36,14 +38,16 @@ N_LAYERS = 16    # Pre-RMSNorm Block 堆叠层数
 SEED = 42        # 权重初始化随机种子（torch.manual_seed）
 
 # 语料
-CORPUS_N = 5     # 固定取 JSONL 前 N 篇训练；设为 None 则用全部有效篇
+CORPUS_N = 5000     # 固定取 JSONL 前 N 篇训练；设为 None 则用全部有效篇
 
 # 训练循环
-TRAIN_STEPS = 3000   # 优化 step 数（每 step：抽 1 篇 → random crop → 1 次 forward/backward）
+BATCH_SIZE = 4       # 每 step 并行样本数（pad 成一批）；显存够可再加大
+USE_CROP = True      # True=每 step 随机切 [CROP_MIN,CROP_MAX]；False=整篇 encode
+TRAIN_STEPS = 5000   # 优化 step 数（每 step：抽 BATCH_SIZE 篇 → 1 次 forward/backward）
 LR = 1e-3            # Adam 学习率
 LOG_EVERY = 500      # 每 N step 打印 loss 与末层 Attention 统计
-CROP_MIN = 32        # random crop 窗口最短 token 数（整篇不足则不切）
-CROP_MAX = 512       # random crop 窗口最长 token 数
+CROP_MIN = 128       # USE_CROP 时：窗口最短 token 数（整篇不足则不切）
+CROP_MAX = 512       # USE_CROP 时：窗口最长 token 数
 DETAIL_STEP = -1     # 等于某 step 时打印逐层矩阵与梯度；-1=关闭（极慢）
 
 # 训练后交互
@@ -170,21 +174,33 @@ def snapshot_attn(model: ToyLLMWithEmbed, input_ids: torch.Tensor) -> dict[str, 
 
 
 print("=" * 75)
-print("训练：TinyNews next-token 预测 | random crop")
+print(f"训练：TinyNews next-token 预测 | {'random crop' if USE_CROP else '整篇'}")
 print(
-    f"steps={TRAIN_STEPS}, lr={LR}, dim={DIM}, layers={N_LAYERS}, "
+    f"steps={TRAIN_STEPS}, batch={BATCH_SIZE}, lr={LR}, dim={DIM}, layers={N_LAYERS}, "
     f"corpus={len(corpus)}, seed={SEED}"
 )
-print(f"crop: 每 step 随机切 [{CROP_MIN}, {CROP_MAX}] tokens（不足 {CROP_MIN} 则用整篇）")
+if USE_CROP:
+    print(f"crop: 每 step 随机切 [{CROP_MIN}, {CROP_MAX}] tokens（不足 {CROP_MIN} 则用整篇）")
+else:
+    print("crop: 关闭（每 step 用整篇 token 序列）")
 print("=" * 75)
 print("loss = CrossEntropy；位置 i 的 logits 预测 input_ids[i+1]")
 print("判据：loss 能否下降；末层 Attention max 能否离开 ~1/seq_len（僵死=均匀）\n")
 
 for step in range(TRAIN_STEPS):
-    text = random.choice(corpus)
-    crop_ids = random_crop_text(tokenizer, text, min_len=CROP_MIN, max_len=CROP_MAX)
-    input_ids = torch.tensor([crop_ids], dtype=torch.long, device=device)
-    attention_mask = torch.ones(1, len(crop_ids), dtype=torch.long, device=device)
+    batch_texts = random.choices(corpus, k=BATCH_SIZE)
+    if USE_CROP:
+        batch_ids = [
+            random_crop_text(tokenizer, t, min_len=CROP_MIN, max_len=CROP_MAX)
+            for t in batch_texts
+        ]
+        input_ids, attention_mask = ids_lists_to_input_ids(
+            tokenizer, batch_ids, device=device
+        )
+    else:
+        input_ids, attention_mask = texts_to_input_ids(
+            tokenizer, batch_texts, device=device
+        )
     detail = step == DETAIL_STEP
 
     if detail:
@@ -220,6 +236,8 @@ for step in range(TRAIN_STEPS):
             print("  !! loss 非有限值（NaN/Inf），训练已崩")
             break
         print()
+        sys.stdout.flush()
+        print(f"  … Step {step}/{TRAIN_STEPS}", file=sys.__stdout__, flush=True)
 
 print("-" * 75)
 print("读结果：loss 明显下降、A.max 拉开 → Attention 在学；loss 不降 / A.max≈1/seq_len → 仍僵死")

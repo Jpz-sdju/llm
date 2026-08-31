@@ -29,10 +29,11 @@ TINYHELEN_NEWS_PATH = TINYHELEN_DATA_DIR / TINYHELEN_NEWS_FILE
 
 
 def redirect_stdout_to_log(log_path: Path | str = DEFAULT_LOG_PATH) -> tuple[TextIO, TextIO]:
-    """训练阶段：stdout 只写 log 文件。返回 (原 stdout, log 文件句柄)。"""
+    """训练阶段：stdout 只写 log 文件（行缓冲，便于实时看进度）。返回 (原 stdout, log 文件句柄)。"""
     path = Path(log_path)
-    print(f"训练中，stdout → {path}（终端静默）", file=sys.__stdout__)
-    log_fp = open(path, "w", encoding="utf-8")
+    print(f"训练中，stdout → {path}（终端静默；进度见 log）", file=sys.__stdout__)
+    # buffering=1：按行立刻落盘，避免「训练很久但 log 一直是空」
+    log_fp = open(path, "w", encoding="utf-8", buffering=1)
     real_stdout = sys.stdout
     sys.stdout = log_fp  # type: ignore[assignment]
     return real_stdout, log_fp
@@ -40,6 +41,10 @@ def redirect_stdout_to_log(log_path: Path | str = DEFAULT_LOG_PATH) -> tuple[Tex
 
 def restore_stdout(real_stdout: TextIO, log_fp: TextIO, *terminal_lines: str) -> None:
     """恢复 stdout、关闭 log；可选在终端打印几行提示。"""
+    try:
+        log_fp.flush()
+    except Exception:
+        pass
     sys.stdout = real_stdout
     log_fp.close()
     for line in terminal_lines:
