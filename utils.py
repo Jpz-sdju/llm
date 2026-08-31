@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import os
+import random
 import shutil
 import subprocess
 import sys
@@ -87,6 +89,61 @@ def ensure_tinyhelen_news(
     if not target.is_file():
         raise FileNotFoundError(f"下载后仍不存在: {target}")
     return target
+
+
+def load_tinyhelen_texts(
+    path: Path | str | None = None,
+    *,
+    min_chars: int = 20,
+) -> list[str]:
+    """从 TinyNews JSONL 逐行解析，收集每条记录的 text 字段。"""
+    jsonl_path = Path(path) if path is not None else ensure_tinyhelen_news()
+    texts: list[str] = []
+    with jsonl_path.open(encoding="utf-8") as f:
+        for line_no, line in enumerate(f, start=1):
+            line = line.strip()
+            if not line:
+                continue
+            row = json.loads(line)
+            text = str(row.get("text", "")).strip()
+            if len(text) < min_chars:
+                continue
+            texts.append(text)
+    if not texts:
+        raise ValueError(f"{jsonl_path} 中未读到有效 text（min_chars={min_chars}）")
+    return texts
+
+
+def random_crop_ids(
+    ids: list[int],
+    *,
+    min_len: int = 32,
+    max_len: int = 512,
+    rng: random.Random | None = None,
+) -> list[int]:
+    """从 token id 序列中随机切一段，长度 ∈ [min_len, min(max_len, len(ids))]。"""
+    if min_len > max_len:
+        raise ValueError(f"min_len ({min_len}) > max_len ({max_len})")
+    n = len(ids)
+    if n <= min_len:
+        return ids
+    r = rng or random
+    crop_len = r.randint(min_len, min(max_len, n))
+    start = r.randint(0, n - crop_len)
+    return ids[start : start + crop_len]
+
+
+def random_crop_text(
+    tokenizer,
+    text: str,
+    *,
+    min_len: int = 32,
+    max_len: int = 512,
+    rng: random.Random | None = None,
+) -> list[int]:
+    """encode 后 random_crop_ids；训练时长文随机窗口。"""
+    ids = tokenizer.encode(text, add_special_tokens=False)
+    return random_crop_ids(ids, min_len=min_len, max_len=max_len, rng=rng)
 
 
 def get_device(name: str = "auto") -> torch.device:

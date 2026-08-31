@@ -1,4 +1,4 @@
-"""ToyLLM：ToyAttention + Block 堆叠（Attention demo / 训练共用）。"""
+"""ToyLLM：Pre-RMSNorm Attention + Block 堆叠。"""
 
 from __future__ import annotations
 
@@ -57,7 +57,6 @@ def _print_mat(name: str, t: torch.Tensor) -> None:
     absmax = t.abs().max().item()
     print(f"  │ [{name}] shape={tuple(t.shape)} | 全体 RMS={fmt(rms_all)} | absmax={fmt(absmax)}")
 
-    # 按最后一维拆成向量： (B,L,D)->(B*L,D)； (D_out,D_in)->每行一个
     vectors = t.reshape(-1, t.shape[-1])
     for i, vec in enumerate(vectors):
         mean = vec.mean().item()
@@ -69,17 +68,16 @@ def _print_mat(name: str, t: torch.Tensor) -> None:
 
 
 class ToyAttention(nn.Module):
-    def __init__(self, dim, use_norm=True):
+    def __init__(self, dim: int):
         super().__init__()
         self.dim = dim
-        self.use_norm = use_norm
         self.rms_norm = nn.RMSNorm(dim)
         self.W_q = nn.Linear(dim, dim, bias=False)
         self.W_k = nn.Linear(dim, dim, bias=False)
         self.W_v = nn.Linear(dim, dim, bias=False)
 
     def forward(self, x, log_stats=False, layer_idx=None):
-        x_norm = self.rms_norm(x) if self.use_norm else x
+        x_norm = self.rms_norm(x)
         q = self.W_q(x_norm)
         k = self.W_k(x_norm)
         v = self.W_v(x_norm)
@@ -89,11 +87,9 @@ class ToyAttention(nn.Module):
         out = torch.matmul(attn_weights, v)
 
         if log_stats:
-            tag = "有 Pre-RMSNorm" if self.use_norm else "无 Norm"
-            print(f"  ┌─ Layer {layer_idx} | {tag} | Attention 矩阵 ─────────────")
+            print(f"  ┌─ Layer {layer_idx} | Pre-RMSNorm Attention ─────────────")
             _print_mat("X (Block 输入)", x)
-            if self.use_norm:
-                _print_mat("X_norm", x_norm)
+            _print_mat("X_norm", x_norm)
             _print_mat("W_q", self.W_q.weight)
             _print_mat("Q", q)
             _print_mat("W_k", self.W_k.weight)
@@ -108,9 +104,9 @@ class ToyAttention(nn.Module):
 
 
 class Block(nn.Module):
-    def __init__(self, dim, use_norm=True):
+    def __init__(self, dim: int):
         super().__init__()
-        self.attn = ToyAttention(dim, use_norm=use_norm)
+        self.attn = ToyAttention(dim)
         self.W_o = nn.Linear(dim, dim, bias=False)
         self.ffn = nn.Sequential(
             nn.Linear(dim, dim * 4, bias=False),
@@ -125,22 +121,19 @@ class Block(nn.Module):
 
 
 class ToyLLM(nn.Module):
-    def __init__(self, dim, n_layers, use_norm=True):
+    def __init__(self, dim: int, n_layers: int):
         super().__init__()
         self.dim = dim
         self.n_layers = n_layers
-        self.use_norm = use_norm
-        self.blocks = nn.ModuleList([Block(dim, use_norm) for _ in range(n_layers)])
+        self.blocks = nn.ModuleList([Block(dim) for _ in range(n_layers)])
         self.apply(init_linear_)
 
     def forward(self, x, log_stats=False):
-        tag = "有 Pre-RMSNorm" if self.use_norm else "无 Norm"
-        # 矩阵很长时避免被省略成 ...
         if log_stats:
             torch.set_printoptions(precision=4, sci_mode=False, linewidth=200, threshold=10**9)
         for i, blk in enumerate(self.blocks):
             x = blk(x, log_stats=log_stats, layer_idx=i)
             if log_stats:
-                print(f"  └─ Layer {i} | {tag} | Block 输出")
+                print(f"  └─ Layer {i} | Block 输出")
                 _print_mat("X (Block 输出)", x)
         return x

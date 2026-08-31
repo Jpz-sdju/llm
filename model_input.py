@@ -17,13 +17,12 @@ class ToyLLMWithEmbed(nn.Module):
         vocab_size: int,
         dim: int = 64,
         n_layers: int = 8,
-        use_norm: bool = True,
     ):
         super().__init__()
         self.vocab_size = vocab_size
         self.dim = dim
         self.embed = nn.Embedding(vocab_size, dim)
-        self.toyllm = ToyLLM(dim, n_layers, use_norm=use_norm)
+        self.toyllm = ToyLLM(dim, n_layers)
         self.lm_head = nn.Linear(dim, vocab_size, bias=False)
         init_embedding_(self.embed)
         # Weight tying：输出头与词嵌入共享同一份 weight
@@ -112,14 +111,13 @@ def greedy_continue(
 
 
 def interactive_ask(
-    model_norm: ToyLLMWithEmbed,
-    model_nonorm: ToyLLMWithEmbed,
+    model: ToyLLMWithEmbed,
     tokenizer,
     *,
     device: torch.device,
     max_new_tokens: int = 32,
 ) -> None:
-    """训练结束后：终端输入前缀，两个模型贪心续写对比。"""
+    """训练结束后：终端输入前缀，模型贪心续写。"""
     print(f"\n{'=' * 75}")
     print("交互问答：输入前缀，看模型怎么续写（空行或 q 退出）")
     print(f"续写长度: {max_new_tokens} tokens")
@@ -134,11 +132,7 @@ def interactive_ask(
         if not prompt or prompt.lower() in {"q", "quit", "exit"}:
             print("[退出]")
             break
-        _, cont_n = greedy_continue(
-            model_norm, tokenizer, prompt, max_new_tokens, device=device
+        _, cont = greedy_continue(
+            model, tokenizer, prompt, max_new_tokens, device=device
         )
-        _, cont_0 = greedy_continue(
-            model_nonorm, tokenizer, prompt, max_new_tokens, device=device
-        )
-        print(f"有 Norm → {prompt}{cont_n}")
-        print(f"无 Norm → {prompt}{cont_0}")
+        print(f"续写 → {prompt}{cont}")
