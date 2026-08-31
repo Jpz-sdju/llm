@@ -1,13 +1,38 @@
 """ToyLLM 唯一入口：sample 文本 → next-token 预测训练（有/无 Norm 对比）。"""
 
+import time
 import torch
 
 from model_input import ToyLLMWithEmbed, next_token_cross_entropy, texts_to_input_ids
 from tokenizer_setup import embedding_vocab_size, encode_split, load_qwen_tokenizer
 from toyllm import ToyLLM, causal_mask, fmt
 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-print(f"=== 运行设备: {device} ===\n")
+# 手动测速：改这里 → "cpu" / "xpu" / "cuda" / "auto"
+DEVICE = "xpu"
+
+_wanted = DEVICE.strip().lower()
+if _wanted == "auto":
+    if torch.xpu.is_available():
+        device = torch.device("xpu")
+    elif torch.cuda.is_available():
+        device = torch.device("cuda")
+    else:
+        device = torch.device("cpu")
+elif _wanted == "xpu":
+    if not torch.xpu.is_available():
+        raise RuntimeError("DEVICE=xpu 但 torch.xpu.is_available()=False")
+    device = torch.device("xpu")
+elif _wanted == "cuda":
+    if not torch.cuda.is_available():
+        raise RuntimeError("DEVICE=cuda 但 torch.cuda.is_available()=False")
+    device = torch.device("cuda")
+elif _wanted == "cpu":
+    device = torch.device("cpu")
+else:
+    raise ValueError(f'DEVICE 只能是 "auto"|"cpu"|"xpu"|"cuda"，当前={DEVICE!r}')
+
+print(f"=== 运行设备: {device}  (DEVICE={DEVICE}) ===\n")
+t_run0 = time.perf_counter()
 
 # dim = 512
 dim = 128
@@ -45,7 +70,7 @@ print(f"[input] tokens: {input_ids.shape[1]}, shape: {tuple(input_ids.shape)}\n"
 train_steps = 201
 lr = 1e-3
 log_every = 50
-detail_step = 0  # 该轮打印 70 层前向详情 + 逐层反向梯度（输出极长）
+detail_step = -1  # 设为某 step 才打印逐层前后向；-1=关闭（打开会极慢）
 
 
 def tensor_rms(t: torch.Tensor | None) -> float | None:
@@ -219,3 +244,9 @@ for step in range(train_steps):
 print("-" * 75)
 print("读结果：若有 Norm loss 明显下降、A.max 拉开；无 Norm loss 不降 / A.max≈1/seq_len / 出现 NaN → 训练救不活无 Norm")
 print("-" * 75)
+if device.type == "xpu":
+    torch.xpu.synchronize()
+elif device.type == "cuda":
+    torch.cuda.synchronize()
+elapsed = time.perf_counter() - t_run0
+print(f"执行时长: {elapsed:.2f} s  |  device={device}  |  steps={train_steps}")

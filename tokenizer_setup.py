@@ -20,7 +20,11 @@ QWEN_TOKENIZER_ID = "Qwen/Qwen3-0.6B"
 
 def load_qwen_tokenizer(model_id: str = QWEN_TOKENIZER_ID):
     """从 HuggingFace Hub（或本地缓存）加载 Qwen3 预训练 tokenizer。"""
-    tokenizer = AutoTokenizer.from_pretrained(model_id)
+    # 优先离线：已缓存时不访问外网（国内常因 ConnectTimeout 挂在 list_repo_templates）
+    try:
+        tokenizer = AutoTokenizer.from_pretrained(model_id, local_files_only=True)
+    except Exception:
+        tokenizer = AutoTokenizer.from_pretrained(model_id)
     # 批训练时需要 pad；Qwen 默认无 pad，用 eos 占位即可
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
