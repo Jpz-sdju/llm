@@ -1,43 +1,23 @@
 """ToyLLM 唯一入口：sample 文本 → next-token 预测训练（有/无 Norm 对比）。"""
 
 import time
+
 import torch
 
 from model_input import ToyLLMWithEmbed, next_token_cross_entropy, texts_to_input_ids
-from tokenizer_setup import embedding_vocab_size, encode_split, load_qwen_tokenizer
+from tokenizer_setup import embedding_vocab_size, encode_split
 from toyllm import ToyLLM, causal_mask, fmt
+from utils import get_device, load_qwen_tokenizer
 
 # 手动测速：改这里 → "cpu" / "xpu" / "cuda" / "auto"
-DEVICE = "xpu"
-
-_wanted = DEVICE.strip().lower()
-if _wanted == "auto":
-    if torch.xpu.is_available():
-        device = torch.device("xpu")
-    elif torch.cuda.is_available():
-        device = torch.device("cuda")
-    else:
-        device = torch.device("cpu")
-elif _wanted == "xpu":
-    if not torch.xpu.is_available():
-        raise RuntimeError("DEVICE=xpu 但 torch.xpu.is_available()=False")
-    device = torch.device("xpu")
-elif _wanted == "cuda":
-    if not torch.cuda.is_available():
-        raise RuntimeError("DEVICE=cuda 但 torch.cuda.is_available()=False")
-    device = torch.device("cuda")
-elif _wanted == "cpu":
-    device = torch.device("cpu")
-else:
-    raise ValueError(f'DEVICE 只能是 "auto"|"cpu"|"xpu"|"cuda"，当前={DEVICE!r}')
-
+DEVICE = "auto"
+device = get_device(DEVICE)
 print(f"=== 运行设备: {device}  (DEVICE={DEVICE}) ===\n")
 t_run0 = time.perf_counter()
 
 # dim = 512
 dim = 128
 n_layers = 16
-
 # ── 输入文本 → token ──────────────────────────────────────────────────────
 
 tokenizer = load_qwen_tokenizer()
@@ -174,10 +154,6 @@ print("loss = CrossEntropy；位置 i 的 logits 预测 input_ids[i+1]")
 print("判据：loss 能否下降；末层 Attention max 能否离开 ~1/seq_len（僵死=均匀）\n")
 
 for step in range(train_steps):
-    # 本模型无 Dropout/BatchNorm，train()/eval() 不改变计算；纯习惯写法，可删
-    model_norm.train()
-    model_nonorm.train()
-
     detail = step == detail_step
 
     if detail:
