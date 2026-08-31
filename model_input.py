@@ -5,7 +5,7 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 
-from tokenizer_setup import encode
+from tokenizer_setup import decode, encode
 from toyllm import ToyLLM, init_embedding_
 
 
@@ -87,3 +87,58 @@ def texts_to_input_ids(
         ids_t = ids_t.to(device)
         mask_t = mask_t.to(device)
     return ids_t, mask_t
+
+
+@torch.no_grad()
+def greedy_continue(
+    model: ToyLLMWithEmbed,
+    tokenizer,
+    prompt: str,
+    n_tokens: int,
+    *,
+    device: torch.device,
+) -> tuple[list[int], str]:
+    """给定 prompt，贪心续写 n_tokens 个 token。返回 (新 token ids, 解码文本)。"""
+    model.eval()
+    ids = encode(tokenizer, prompt)
+    cur = torch.tensor([ids], dtype=torch.long, device=device)
+    new_ids: list[int] = []
+    for _ in range(n_tokens):
+        logits = model(cur)
+        next_id = int(logits[0, -1].argmax().item())
+        new_ids.append(next_id)
+        cur = torch.cat([cur, torch.tensor([[next_id]], device=device)], dim=1)
+    return new_ids, decode(tokenizer, new_ids)
+
+
+def interactive_ask(
+    model_norm: ToyLLMWithEmbed,
+    model_nonorm: ToyLLMWithEmbed,
+    tokenizer,
+    *,
+    device: torch.device,
+    max_new_tokens: int = 32,
+) -> None:
+    """训练结束后：终端输入前缀，两个模型贪心续写对比。"""
+    print(f"\n{'=' * 75}")
+    print("交互问答：输入前缀，看模型怎么续写（空行或 q 退出）")
+    print(f"续写长度: {max_new_tokens} tokens")
+    print("提示: 需直接运行 python3 attention_demo.py，make run > log 无法输入")
+    print("=" * 75)
+    while True:
+        try:
+            prompt = input("\n你: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print("\n[退出]")
+            break
+        if not prompt or prompt.lower() in {"q", "quit", "exit"}:
+            print("[退出]")
+            break
+        _, cont_n = greedy_continue(
+            model_norm, tokenizer, prompt, max_new_tokens, device=device
+        )
+        _, cont_0 = greedy_continue(
+            model_nonorm, tokenizer, prompt, max_new_tokens, device=device
+        )
+        print(f"有 Norm → {prompt}{cont_n}")
+        print(f"无 Norm → {prompt}{cont_0}")

@@ -4,7 +4,12 @@ import time
 
 import torch
 
-from model_input import ToyLLMWithEmbed, next_token_cross_entropy, texts_to_input_ids
+from model_input import (
+    ToyLLMWithEmbed,
+    interactive_ask,
+    next_token_cross_entropy,
+    texts_to_input_ids,
+)
 from tokenizer_setup import embedding_vocab_size, encode_split
 from toyllm import ToyLLM, causal_mask, fmt
 from utils import get_device, load_qwen_tokenizer
@@ -50,10 +55,11 @@ print(f"[input] tokens: {input_ids.shape[1]}, shape: {tuple(input_ids.shape)}\n"
 
 # ── 训练：next-token 预测，有 Norm vs 无 Norm ─────────────────────────────
 
-train_steps = 51
+train_steps = 3000
 lr = 1e-3
-log_every = 50
-detail_step = 0  # 设为某 step 才打印逐层前后向；-1=关闭（打开会极慢）
+log_every = 100
+detail_step = -1  # 设为某 step 才打印逐层前后向；-1=关闭（打开会极慢）
+gen_tokens = 32   # 交互问答时贪心续写 token 数
 
 
 def tensor_rms(t: torch.Tensor | None) -> float | None:
@@ -228,4 +234,12 @@ if device.type == "xpu":
 elif device.type == "cuda":
     torch.cuda.synchronize()
 elapsed = time.perf_counter() - t_run0
-print(f"执行时长: {elapsed:.2f} s  |  device={device}  |  steps={train_steps}")
+print(f"训练完成: {elapsed:.2f} s  |  device={device}  |  steps={train_steps}\n")
+
+interactive_ask(
+    model_norm,
+    model_nonorm,
+    tokenizer,
+    device=device,
+    max_new_tokens=gen_tokens,
+)
