@@ -6,11 +6,11 @@ import torch
 import torch.nn as nn
 
 from tokenizer_setup import encode
-from toyllm import ToyLLM, init_embedding_, init_linear_
+from toyllm import ToyLLM, init_embedding_
 
 
 class ToyLLMWithEmbed(nn.Module):
-    """Qwen tokenizer 的 id → Embedding → ToyLLM → lm_head，用于 next-token 预测。"""
+    """Qwen tokenizer 的 id → Embedding → ToyLLM → lm_head（weight tying），用于 next-token 预测。"""
 
     def __init__(
         self,
@@ -26,7 +26,8 @@ class ToyLLMWithEmbed(nn.Module):
         self.toyllm = ToyLLM(dim, n_layers, use_norm=use_norm)
         self.lm_head = nn.Linear(dim, vocab_size, bias=False)
         init_embedding_(self.embed)
-        init_linear_(self.lm_head)
+        # Weight tying：输出头与词嵌入共享同一份 weight
+        self.lm_head.weight = self.embed.weight
 
     def forward(self, input_ids: torch.Tensor, log_stats: bool = False) -> torch.Tensor:
         """input_ids (B, L) → logits (B, L, vocab_size)；位置 i 预测 token i+1。"""

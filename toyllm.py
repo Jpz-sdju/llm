@@ -46,6 +46,28 @@ def causal_mask(seq_len: int, device: torch.device) -> torch.Tensor:
     )
 
 
+def _print_mat(name: str, t: torch.Tensor) -> None:
+    """打印矩阵；每个最后一维向量附带 mean/std/rms。"""
+    if t.device.type == "xpu":
+        torch.xpu.synchronize()
+    elif t.device.type == "cuda":
+        torch.cuda.synchronize()
+    t = t.detach().float().contiguous().cpu().clone()
+    rms_all = torch.sqrt((t ** 2).mean()).item()
+    absmax = t.abs().max().item()
+    print(f"  │ [{name}] shape={tuple(t.shape)} | 全体 RMS={fmt(rms_all)} | absmax={fmt(absmax)}")
+
+    # 按最后一维拆成向量： (B,L,D)->(B*L,D)； (D_out,D_in)->每行一个
+    vectors = t.reshape(-1, t.shape[-1])
+    for i, vec in enumerate(vectors):
+        mean = vec.mean().item()
+        std = vec.std(unbiased=False).item()
+        rms = torch.sqrt((vec ** 2).mean()).item()
+        print(f"  │   vec[{i}] mean={fmt(mean)} | std={fmt(std)} | rms={fmt(rms)}")
+        print(f"  │   {vec.tolist()}")
+    print()
+
+
 class ToyAttention(nn.Module):
     def __init__(self, dim, use_norm=True):
         super().__init__()
@@ -68,20 +90,19 @@ class ToyAttention(nn.Module):
 
         if log_stats:
             tag = "有 Pre-RMSNorm" if self.use_norm else "无 Norm"
-            x_rms = torch.sqrt((x ** 2).mean()).item()
-            print(f"  ┌─ Layer {layer_idx} | {tag} | Attention ─────────────────")
-            print(f"  │ [Block 输入 X]  Mean: {fmt(x.mean())} | Std: {fmt(x.std())} | RMS: {fmt(x_rms)}")
+            print(f"  ┌─ Layer {layer_idx} | {tag} | Attention 矩阵 ─────────────")
+            _print_mat("X (Block 输入)", x)
             if self.use_norm:
-                xn_rms = torch.sqrt((x_norm ** 2).mean()).item()
-                print(f"  │ [X_norm]        Mean: {fmt(x_norm.mean())} | Std: {fmt(x_norm.std())} | RMS: {fmt(xn_rms)}")
-            print(f"  │ [W_q 权重]      Mean: {fmt(self.W_q.weight.mean())} | Std: {fmt(self.W_q.weight.std())} | Max: {fmt(self.W_q.weight.abs().max())}")
-            print(f"  │ [Q 激活]        Mean: {fmt(q.mean())} | Std: {fmt(q.std())} | RMS: {fmt(torch.sqrt((q**2).mean()))}")
-            print(f"  │ [W_k 权重]      Mean: {fmt(self.W_k.weight.mean())} | Std: {fmt(self.W_k.weight.std())} | Max: {fmt(self.W_k.weight.abs().max())}")
-            print(f"  │ [K 激活]        Mean: {fmt(k.mean())} | Std: {fmt(k.std())} | RMS: {fmt(torch.sqrt((k**2).mean()))}")
-            print(f"  │ [Scores S]      Mean: {fmt(scores.mean())} | Std: {fmt(scores.std())} | Min: {fmt(scores.min())} | Max: {fmt(scores.max())}  (S = QK^T/√d, causal mask)")
-            print(f"  │ [Attention A]   Mean: {fmt(attn_weights.mean())} | Std: {fmt(attn_weights.std())} | Min: {fmt(attn_weights.min())} | Max: {fmt(attn_weights.max())}  (A = softmax(S), 每行只看 j≤i)")
-            print(f"  │ [V 激活]        Mean: {fmt(v.mean())} | Std: {fmt(v.std())} | RMS: {fmt(torch.sqrt((v**2).mean()))}")
-            print(f"  │ [输出 O]        Mean: {fmt(out.mean())} | Std: {fmt(out.std())} | RMS: {fmt(torch.sqrt((out**2).mean()))}  (O = AV)")
+                _print_mat("X_norm", x_norm)
+            _print_mat("W_q", self.W_q.weight)
+            _print_mat("Q", q)
+            _print_mat("W_k", self.W_k.weight)
+            _print_mat("K", k)
+            _print_mat("W_v", self.W_v.weight)
+            _print_mat("V", v)
+            _print_mat("Scores S (= QK^T/√d, 未来为 -inf)", scores)
+            _print_mat("Attention A (= softmax(S))", attn_weights)
+            _print_mat("O (= A V)", out)
 
         return out
 
@@ -114,11 +135,12 @@ class ToyLLM(nn.Module):
 
     def forward(self, x, log_stats=False):
         tag = "有 Pre-RMSNorm" if self.use_norm else "无 Norm"
+        # 矩阵很长时避免被省略成 ...
+        if log_stats:
+            torch.set_printoptions(precision=4, sci_mode=False, linewidth=200, threshold=10**9)
         for i, blk in enumerate(self.blocks):
             x = blk(x, log_stats=log_stats, layer_idx=i)
             if log_stats:
-                rms = torch.sqrt((x ** 2).mean()).item()
-                std = x.std().item()
-                print(f"  └─ Layer {i} | {tag} | Block 输出 → X RMS = {fmt(rms)}  Std = {fmt(std)}")
-                print()
+                print(f"  └─ Layer {i} | {tag} | Block 输出")
+                _print_mat("X (Block 输出)", x)
         return x
