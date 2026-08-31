@@ -6,11 +6,11 @@ import torch
 import torch.nn as nn
 
 from tokenizer_setup import encode
-from toyllm import ToyLLM, init_embedding_
+from toyllm import ToyLLM, init_embedding_, init_linear_
 
 
 class ToyLLMWithEmbed(nn.Module):
-    """Qwen tokenizer 的 id 经 Embedding 后送入 ToyLLM。"""
+    """Qwen tokenizer 的 id → Embedding → ToyLLM → lm_head，用于 next-token 预测。"""
 
     def __init__(
         self,
@@ -24,12 +24,39 @@ class ToyLLMWithEmbed(nn.Module):
         self.dim = dim
         self.embed = nn.Embedding(vocab_size, dim)
         self.toyllm = ToyLLM(dim, n_layers, use_norm=use_norm)
+        self.lm_head = nn.Linear(dim, vocab_size, bias=False)
         init_embedding_(self.embed)
+        init_linear_(self.lm_head)
 
     def forward(self, input_ids: torch.Tensor, log_stats: bool = False) -> torch.Tensor:
-        """input_ids (B, L) → (B, L, dim)"""
+        """input_ids (B, L) → logits (B, L, vocab_size)；位置 i 预测 token i+1。"""
         x = self.embed(input_ids)
-        return self.toyllm(x, log_stats=log_stats)
+        hidden = self.toyllm(x, log_stats=log_stats)
+        return self.lm_head(hidden)
+
+
+def next_token_cross_entropy(
+    logits: torch.Tensor,
+    input_ids: torch.Tensor,
+    attention_mask: torch.Tensor | None = None,
+) -> torch.Tensor:
+    """因果 LM loss：logits[:, i] 与 input_ids[:, i+1] 做交叉熵；pad 位置不计入。"""
+    shift_logits = logits[:, :-1, :].contiguous()
+    shift_labels = input_ids[:, 1:].contiguous()
+
+    if attention_mask is None:
+        return torch.nn.functional.cross_entropy(
+            shift_logits.view(-1, shift_logits.size(-1)),
+            shift_labels.view(-1),
+        )
+
+    shift_mask = attention_mask[:, 1:].contiguous().view(-1)
+    per_token = torch.nn.functional.cross_entropy(
+        shift_logits.view(-1, shift_logits.size(-1)),
+        shift_labels.view(-1),
+        reduction="none",
+    )
+    return (per_token * shift_mask).sum() / shift_mask.sum()
 
 
 def texts_to_input_ids(

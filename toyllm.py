@@ -38,6 +38,14 @@ def init_embedding_(module: nn.Module) -> None:
         nn.init.normal_(module.weight, mean=0.0, std=embed_init_std)
 
 
+def causal_mask(seq_len: int, device: torch.device) -> torch.Tensor:
+    """(L, L) bool；True = 未来位置，softmax 前置为 -inf。位置 i 只能 attend 到 j≤i。"""
+    return torch.triu(
+        torch.ones(seq_len, seq_len, device=device, dtype=torch.bool),
+        diagonal=1,
+    )
+
+
 class ToyAttention(nn.Module):
     def __init__(self, dim, use_norm=True):
         super().__init__()
@@ -54,6 +62,7 @@ class ToyAttention(nn.Module):
         k = self.W_k(x_norm)
         v = self.W_v(x_norm)
         scores = torch.matmul(q, k.transpose(-1, -2)) / math.sqrt(self.dim)
+        scores = scores.masked_fill(causal_mask(scores.size(-1), scores.device), float("-inf"))
         attn_weights = F.softmax(scores, dim=-1)
         out = torch.matmul(attn_weights, v)
 
@@ -69,8 +78,8 @@ class ToyAttention(nn.Module):
             print(f"  │ [Q 激活]        Mean: {fmt(q.mean())} | Std: {fmt(q.std())} | RMS: {fmt(torch.sqrt((q**2).mean()))}")
             print(f"  │ [W_k 权重]      Mean: {fmt(self.W_k.weight.mean())} | Std: {fmt(self.W_k.weight.std())} | Max: {fmt(self.W_k.weight.abs().max())}")
             print(f"  │ [K 激活]        Mean: {fmt(k.mean())} | Std: {fmt(k.std())} | RMS: {fmt(torch.sqrt((k**2).mean()))}")
-            print(f"  │ [Scores S]      Mean: {fmt(scores.mean())} | Std: {fmt(scores.std())} | Min: {fmt(scores.min())} | Max: {fmt(scores.max())}  (S = QK^T/√d)")
-            print(f"  │ [Attention A]   Mean: {fmt(attn_weights.mean())} | Std: {fmt(attn_weights.std())} | Min: {fmt(attn_weights.min())} | Max: {fmt(attn_weights.max())}  (A = softmax(S))")
+            print(f"  │ [Scores S]      Mean: {fmt(scores.mean())} | Std: {fmt(scores.std())} | Min: {fmt(scores.min())} | Max: {fmt(scores.max())}  (S = QK^T/√d, causal mask)")
+            print(f"  │ [Attention A]   Mean: {fmt(attn_weights.mean())} | Std: {fmt(attn_weights.std())} | Min: {fmt(attn_weights.min())} | Max: {fmt(attn_weights.max())}  (A = softmax(S), 每行只看 j≤i)")
             print(f"  │ [V 激活]        Mean: {fmt(v.mean())} | Std: {fmt(v.std())} | RMS: {fmt(torch.sqrt((v**2).mean()))}")
             print(f"  │ [输出 O]        Mean: {fmt(out.mean())} | Std: {fmt(out.std())} | RMS: {fmt(torch.sqrt((out**2).mean()))}  (O = AV)")
 
