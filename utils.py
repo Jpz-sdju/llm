@@ -1,8 +1,13 @@
-"""通用工具：设备选择、Qwen tokenizer 加载。"""
+"""通用工具：设备选择、Qwen tokenizer 加载、训练 log 重定向、TinyHelen 语料。"""
 
 from __future__ import annotations
 
 import os
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+from typing import TextIO
 
 import torch
 
@@ -12,6 +17,76 @@ os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
 from transformers import AutoTokenizer
 
 QWEN_TOKENIZER_ID = "Qwen/Qwen3-0.6B"
+DEFAULT_LOG_PATH = Path("log")
+
+TINYHELEN_REPO_ID = "fzmnm/TinyHelen-zh"
+TINYHELEN_NEWS_FILE = "TinyNews-zh_000.jsonl"
+PROJECT_ROOT = Path(__file__).resolve().parent
+TINYHELEN_DATA_DIR = PROJECT_ROOT / "data" / "TinyHelen-zh"
+TINYHELEN_NEWS_PATH = TINYHELEN_DATA_DIR / TINYHELEN_NEWS_FILE
+
+
+def redirect_stdout_to_log(log_path: Path | str = DEFAULT_LOG_PATH) -> tuple[TextIO, TextIO]:
+    """训练阶段：stdout 只写 log 文件。返回 (原 stdout, log 文件句柄)。"""
+    path = Path(log_path)
+    print(f"训练中，stdout → {path}（终端静默）", file=sys.__stdout__)
+    log_fp = open(path, "w", encoding="utf-8")
+    real_stdout = sys.stdout
+    sys.stdout = log_fp  # type: ignore[assignment]
+    return real_stdout, log_fp
+
+
+def restore_stdout(real_stdout: TextIO, log_fp: TextIO, *terminal_lines: str) -> None:
+    """恢复 stdout、关闭 log；可选在终端打印几行提示。"""
+    sys.stdout = real_stdout
+    log_fp.close()
+    for line in terminal_lines:
+        print(line)
+
+
+def _download_tinyhelen_news(local_dir: Path) -> None:
+    """等价于 huggingface-cli download ... --include TinyNews-zh_000.jsonl。"""
+    local_dir.mkdir(parents=True, exist_ok=True)
+    env = os.environ.copy()
+    env.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
+    args = [
+        "download",
+        TINYHELEN_REPO_ID,
+        "--repo-type",
+        "dataset",
+        "--local-dir",
+        str(local_dir),
+        "--include",
+        TINYHELEN_NEWS_FILE,
+    ]
+    cli = shutil.which("hf") or shutil.which("huggingface-cli")
+    if cli:
+        subprocess.run([cli, *args], check=True, env=env)
+        return
+    from huggingface_hub import hf_hub_download
+
+    hf_hub_download(
+        repo_id=TINYHELEN_REPO_ID,
+        repo_type="dataset",
+        filename=TINYHELEN_NEWS_FILE,
+        local_dir=str(local_dir),
+    )
+
+
+def ensure_tinyhelen_news(
+    path: Path | None = None,
+    *,
+    data_dir: Path | None = None,
+) -> Path:
+    """本地无 TinyNews-zh_000.jsonl 时自动下载；有则直接返回路径。"""
+    target = Path(path) if path else (data_dir or TINYHELEN_DATA_DIR) / TINYHELEN_NEWS_FILE
+    if target.is_file() and target.stat().st_size > 0:
+        return target
+    print(f"未找到 {target}，正在下载 {TINYHELEN_REPO_ID}/{TINYHELEN_NEWS_FILE} …", file=sys.__stdout__)
+    _download_tinyhelen_news(target.parent)
+    if not target.is_file():
+        raise FileNotFoundError(f"下载后仍不存在: {target}")
+    return target
 
 
 def get_device(name: str = "auto") -> torch.device:

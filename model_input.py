@@ -123,7 +123,7 @@ def interactive_ask(
     print(f"\n{'=' * 75}")
     print("交互问答：输入前缀，看模型怎么续写（空行或 q 退出）")
     print(f"续写长度: {max_new_tokens} tokens")
-    print("提示: 需直接运行 python3 attention_demo.py，make run > log 无法输入")
+    print("提示: 空行或 q 退出；训练 log 已写入项目 log 文件")
     print("=" * 75)
     while True:
         try:

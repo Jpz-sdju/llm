@@ -1,6 +1,7 @@
 """ToyLLM 唯一入口：sample 文本 → next-token 预测训练（有/无 Norm 对比）。"""
 
 import time
+from pathlib import Path
 
 import torch
 
@@ -12,11 +13,14 @@ from model_input import (
 )
 from tokenizer_setup import embedding_vocab_size, encode_split
 from toyllm import ToyLLM, causal_mask, fmt
-from utils import get_device, load_qwen_tokenizer
+from utils import get_device, load_qwen_tokenizer, redirect_stdout_to_log, restore_stdout
+
+LOG_PATH = Path(__file__).resolve().parent / "log"
 
 # 手动测速：改这里 → "cpu" / "xpu" / "cuda" / "auto"
 DEVICE = "auto"
 device = get_device(DEVICE)
+_real_stdout, _log_fp = redirect_stdout_to_log(LOG_PATH)
 print(f"=== 运行设备: {device}  (DEVICE={DEVICE}) ===\n")
 t_run0 = time.perf_counter()
 
@@ -57,7 +61,7 @@ print(f"[input] tokens: {input_ids.shape[1]}, shape: {tuple(input_ids.shape)}\n"
 
 train_steps = 3000
 lr = 1e-3
-log_every = 100
+log_every = 500
 detail_step = -1  # 设为某 step 才打印逐层前后向；-1=关闭（打开会极慢）
 gen_tokens = 32   # 交互问答时贪心续写 token 数
 
@@ -235,6 +239,12 @@ elif device.type == "cuda":
     torch.cuda.synchronize()
 elapsed = time.perf_counter() - t_run0
 print(f"训练完成: {elapsed:.2f} s  |  device={device}  |  steps={train_steps}\n")
+restore_stdout(
+    _real_stdout,
+    _log_fp,
+    f"训练完成: {elapsed:.2f} s  |  日志: {LOG_PATH}",
+    "下面进入交互问答\n",
+)
 
 interactive_ask(
     model_norm,
