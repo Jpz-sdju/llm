@@ -204,13 +204,16 @@ def run_train_loop(
         else:
             log_detail = step in ds
 
+        # full_backward_hook 必须在本次 forward 之前挂上，否则 backward 不会回调
+        hooks: list = []
+        if log_detail:
+            hooks = _attach_block_backward_hooks(model.toy)
+
         logits = model(input_ids, log_stats=log_detail)
         loss = next_token_cross_entropy(logits, input_ids, attention_mask)
 
-        hooks: list = []
         if log_detail:
             print(f"\n  ▼▼▼ 反向传播（Layer {cfg.n_layers - 1} → 0）▼▼▼")
-            hooks = _attach_block_backward_hooks(model.toy)
 
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
