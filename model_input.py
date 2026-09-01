@@ -2,11 +2,59 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import torch
 import torch.nn as nn
 
 from tokenizer_setup import decode, encode
 from toyllm import ToyLLM, init_embedding_
+
+
+def save_checkpoint(
+    path: Path | str,
+    model: ToyLLMWithEmbed,
+    *,
+    tokenizer_id: str,
+    train_steps: int | None = None,
+) -> Path:
+    """保存权重 + 结构超参，供别处 load 后直接推理（tokenizer 需单独加载）。"""
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "model_state_dict": model.state_dict(),
+        "config": {
+            "vocab_size": model.vocab_size,
+            "dim": model.dim,
+            "n_layers": model.toyllm.n_layers,
+            "tokenizer_id": tokenizer_id,
+        },
+    }
+    if train_steps is not None:
+        payload["train_steps"] = train_steps
+    torch.save(payload, target)
+    return target
+
+
+def load_checkpoint(
+    path: Path | str,
+    *,
+    device: torch.device | str = "cpu",
+) -> tuple[ToyLLMWithEmbed, dict]:
+    """从 checkpoint 恢复模型；返回 (model, meta dict，含 config + train_steps 等)。"""
+    ckpt = torch.load(Path(path), map_location=device, weights_only=False)
+    cfg = dict(ckpt["config"])
+    if "train_steps" in ckpt:
+        cfg["train_steps"] = ckpt["train_steps"]
+    model = ToyLLMWithEmbed(
+        cfg["vocab_size"],
+        dim=cfg["dim"],
+        n_layers=cfg["n_layers"],
+    )
+    model.load_state_dict(ckpt["model_state_dict"])
+    model.to(device)
+    model.eval()
+    return model, cfg
 
 
 class ToyLLMWithEmbed(nn.Module):
