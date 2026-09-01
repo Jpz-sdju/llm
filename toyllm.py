@@ -1,4 +1,4 @@
-"""ToyLLM：Pre-RMSNorm Attention + Block 堆叠。"""
+"""ToyLLM：≈ Qwen3Model — embed_tokens + Pre-RMSNorm Block 堆叠。"""
 
 from __future__ import annotations
 
@@ -46,8 +46,16 @@ def causal_mask(seq_len: int, device: torch.device) -> torch.Tensor:
     )
 
 
+def _print_vec_stats(label: str, vec: torch.Tensor) -> None:
+    mean = vec.mean().item()
+    std = vec.std(unbiased=False).item()
+    rms = torch.sqrt((vec ** 2).mean()).item()
+    print(f"  │   {label} mean={fmt(mean)} | std={fmt(std)} | rms={fmt(rms)}")
+    print(f"  │   {vec.tolist()}")
+
+
 def _print_mat(name: str, t: torch.Tensor) -> None:
-    """打印矩阵；每个最后一维向量附带 mean/std/rms。"""
+    """打印矩阵；3D 按 batch/pos 标注，2D 按 row，不打平成 vec[i]。"""
     if t.device.type == "xpu":
         torch.xpu.synchronize()
     elif t.device.type == "cuda":
@@ -57,13 +65,26 @@ def _print_mat(name: str, t: torch.Tensor) -> None:
     absmax = t.abs().max().item()
     print(f"  │ [{name}] shape={tuple(t.shape)} | 全体 RMS={fmt(rms_all)} | absmax={fmt(absmax)}")
 
-    vectors = t.reshape(-1, t.shape[-1])
-    for i, vec in enumerate(vectors):
-        mean = vec.mean().item()
-        std = vec.std(unbiased=False).item()
-        rms = torch.sqrt((vec ** 2).mean()).item()
-        print(f"  │   vec[{i}] mean={fmt(mean)} | std={fmt(std)} | rms={fmt(rms)}")
-        print(f"  │   {vec.tolist()}")
+    if t.ndim == 3:
+        b_size, l_size, last = t.shape
+        if last == l_size:
+            # (B, L, L)：Scores / Attention，最后一维是 key 位置
+            for b in range(b_size):
+                for q in range(l_size):
+                    _print_vec_stats(f"batch[{b}] query_pos[{q}] → keys", t[b, q])
+        else:
+            # (B, L, D)：X / Q / K / V / O 等
+            for b in range(b_size):
+                for p in range(l_size):
+                    _print_vec_stats(f"batch[{b}] pos[{p}]", t[b, p])
+    elif t.ndim == 2:
+        for r in range(t.shape[0]):
+            _print_vec_stats(f"row[{r}]", t[r])
+    elif t.ndim == 1:
+        _print_vec_stats("vec", t)
+    else:
+        for idx, vec in enumerate(t.reshape(-1, t.shape[-1])):
+            _print_vec_stats(f"flat[{idx}]", vec)
     print()
 
 
@@ -88,17 +109,17 @@ class ToyAttention(nn.Module):
 
         if log_stats:
             print(f"  ┌─ Layer {layer_idx} | Pre-RMSNorm Attention ─────────────")
-            _print_mat("X (Block 输入)", x)
-            _print_mat("X_norm", x_norm)
-            _print_mat("W_q", self.W_q.weight)
-            _print_mat("Q", q)
-            _print_mat("W_k", self.W_k.weight)
-            _print_mat("K", k)
-            _print_mat("W_v", self.W_v.weight)
-            _print_mat("V", v)
-            _print_mat("Scores S (= QK^T/√d, 未来为 -inf)", scores)
-            _print_mat("Attention A (= softmax(S))", attn_weights)
-            _print_mat("O (= A V)", out)
+            _print_mat("[DEBUG] X (Block 输入)", x)
+            _print_mat("[DEBUG] X_norm", x_norm)
+            _print_mat("[DEBUG] W_q", self.W_q.weight)
+            _print_mat("[DEBUG] Q", q)
+            _print_mat("[DEBUG] W_k", self.W_k.weight)
+            _print_mat("[DEBUG] K", k)
+            _print_mat("[DEBUG] W_v", self.W_v.weight)
+            _print_mat("[DEBUG] V", v)
+            _print_mat("[DEBUG] Scores S (= QK^T/√d, 未来为 -inf)", scores)
+            _print_mat("[DEBUG] Attention A (= softmax(S))", attn_weights)
+            _print_mat("[DEBUG] O (= A V)", out)
 
         return out
 
@@ -121,16 +142,23 @@ class Block(nn.Module):
 
 
 class ToyLLM(nn.Module):
-    def __init__(self, dim: int, n_layers: int):
+    """≈ Qwen3Model：embed_tokens + Block 堆叠 → hidden（无 lm_head）。"""
+
+    def __init__(self, vocab_size: int, dim: int, n_layers: int):
         super().__init__()
+        self.vocab_size = vocab_size
         self.dim = dim
         self.n_layers = n_layers
+        self.embed_tokens = nn.Embedding(vocab_size, dim)
         self.blocks = nn.ModuleList([Block(dim) for _ in range(n_layers)])
+        init_embedding_(self.embed_tokens)
         self.apply(init_linear_)
 
-    def forward(self, x, log_stats=False):
+    def forward(self, input_ids: torch.Tensor, log_stats: bool = False) -> torch.Tensor:
+        """input_ids (B, L) → hidden (B, L, D)。"""
         if log_stats:
             torch.set_printoptions(precision=4, sci_mode=False, linewidth=200, threshold=10**9)
+        x = self.embed_tokens(input_ids)
         for i, blk in enumerate(self.blocks):
             x = blk(x, log_stats=log_stats, layer_idx=i)
             if log_stats:

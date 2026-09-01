@@ -6,58 +6,76 @@ from train import TrainConfig, run
 
 # ── Demo 参数（以后改动改这里即可）──────────────────────────────────────────────────
 
-# 运行环境
-DEVICE = "auto"  # "auto" | "cpu" | "cuda" | "xpu"
+# 只改这一行切换配置： "XPU_DEBUG" | "GPU_TRAIN"
+PROFILE = "XPU_DEBUG"
+
 LOG_PATH = Path(__file__).resolve().parent / "log"
-
-# 模型结构
-DIM = 128
-N_LAYERS = 16
-SEED = 42
-
-# 语料
-CORPUS_N = 500  # 固定取 JSONL 前 N 篇；None = 全部有效篇
-
-# 训练循环
-BATCH_SIZE = 4
-USE_CROP = False
-TRAIN_STEPS = 10000
-LR = 1e-3
-LOG_EVERY = 500
-CROP_MIN = 128
-CROP_MAX = 512
-DETAIL_STEP = -1  # 等于某 step 时打印逐层矩阵与梯度；-1=关闭
-
-# Checkpoint
 CKPT_PATH = Path("checkpoints/toyllm.pt")
-SAVE_CKPT = True
 LOAD_CKPT: Path | None = None  # 设路径则跳过训练，直接加载权重
-
-# 训练后交互续写；仅加载已有权重推理：设 LOAD_CKPT  above
+SEED = 42
 INTERACTIVE_AFTER = True
 GEN_TOKENS = 32
+
+# 核显：小模型、少步、开 detail，方便看矩阵
+XPU_DEBUG = dict(
+    device="xpu",
+    dim=32,
+    n_layers=4,
+    corpus_n=1,
+    batch_size=1,
+    use_crop=False,
+    train_steps=2,
+    lr=1e-3,
+    log_every=1,
+    crop_min=128,
+    crop_max=512,
+    detail_steps=[0],  # False=关 | True=每步 | [0,1]=指定 step
+    save_ckpt=False,
+)
+
+# 大卡：正经训，关 detail
+GPU_TRAIN = dict(
+    device="cuda",
+    dim=128,
+    n_layers=16,
+    corpus_n=500,
+    batch_size=4,
+    use_crop=False,
+    train_steps=10000,
+    lr=1e-3,
+    log_every=500,
+    crop_min=128,
+    crop_max=512,
+    detail_steps=False,
+    save_ckpt=True,
+)
+
+_PROFILES = {"XPU_DEBUG": XPU_DEBUG, "GPU_TRAIN": GPU_TRAIN}
+if PROFILE not in _PROFILES:
+    raise ValueError(f"未知 PROFILE={PROFILE!r}，可选: {list(_PROFILES)}")
+cfg = _PROFILES[PROFILE]
 
 # ── 以下无需改 ────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     run(
         TrainConfig(
-            device=DEVICE,
+            device=cfg["device"],
             log_path=LOG_PATH,
-            dim=DIM,
-            n_layers=N_LAYERS,
+            dim=cfg["dim"],
+            n_layers=cfg["n_layers"],
             seed=SEED,
-            corpus_n=CORPUS_N,
-            batch_size=BATCH_SIZE,
-            use_crop=USE_CROP,
-            train_steps=TRAIN_STEPS,
-            lr=LR,
-            log_every=LOG_EVERY,
-            crop_min=CROP_MIN,
-            crop_max=CROP_MAX,
-            detail_step=DETAIL_STEP,
+            corpus_n=cfg["corpus_n"],
+            batch_size=cfg["batch_size"],
+            use_crop=cfg["use_crop"],
+            train_steps=cfg["train_steps"],
+            lr=cfg["lr"],
+            log_every=cfg["log_every"],
+            crop_min=cfg["crop_min"],
+            crop_max=cfg["crop_max"],
+            detail_steps=cfg["detail_steps"],
             ckpt_path=CKPT_PATH,
-            save_ckpt=SAVE_CKPT,
+            save_ckpt=cfg["save_ckpt"],
             load_ckpt=LOAD_CKPT,
             interactive_after=INTERACTIVE_AFTER,
             gen_tokens=GEN_TOKENS,

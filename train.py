@@ -1,4 +1,4 @@
-"""TinyNews next-token 训练逻辑（由 attention_demo.py 调用）。"""
+﻿"""TinyNews next-token 训练逻辑（由 attention_demo.py 调用）。"""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from pathlib import Path
 import torch
 
 from model_input import (
-    ToyLLMWithEmbed,
+    ToyForCausalLM,
     ids_lists_to_input_ids,
     interactive_ask,
     load_checkpoint,
@@ -51,7 +51,8 @@ class TrainConfig:
     log_every: int = 500
     crop_min: int = 128
     crop_max: int = 512
-    detail_step: int = -1
+    # False=关；True=每步；list/tuple=指定 step
+    detail_steps: bool | list[int] | tuple[int, ...] = False
 
     ckpt_path: Path = Path("checkpoints/toyllm.pt")
     save_ckpt: bool = True
@@ -113,18 +114,18 @@ def _print_layer_weight_grads(model: ToyLLM) -> None:
 
 
 def _snapshot_attn(
-    model: ToyLLMWithEmbed,
+    model: ToyForCausalLM,
     input_ids: torch.Tensor,
     *,
     dim: int,
 ) -> dict[str, float]:
     model.eval()
     with torch.no_grad():
-        x = model.embed(input_ids)
+        x = model.toy.embed_tokens(input_ids)
         h = x
-        for blk in model.toyllm.blocks[:-1]:
+        for blk in model.toy.blocks[:-1]:
             h = blk(h)
-        blk = model.toyllm.blocks[-1]
+        blk = model.toy.blocks[-1]
         attn = blk.attn
         x_in = h
         x_n = attn.rms_norm(x_in)
@@ -140,7 +141,6 @@ def _snapshot_attn(
         "x_rms": torch.sqrt((out ** 2).mean()).item(),
         "s_std": finite.std().item() if finite.numel() else float("nan"),
         "a_max": a.max().item(),
-        "a_std": a.std().item(),
     }
 
 
@@ -157,15 +157,25 @@ def _print_corpus_preview(
     *,
     device: torch.device,
 ) -> None:
-    preview_text = corpus[0]
-    ids, pieces = encode_split(tokenizer, preview_text)
-    print("预览第 1 篇 pieces=", pieces[:12], "...")
-    preview_ids, _ = texts_to_input_ids(tokenizer, preview_text, device=device)
-    print(f"[预览] tokens: {preview_ids.shape[1]}, shape: {tuple(preview_ids.shape)}\n")
+    for i, text in enumerate(corpus):
+        _, pieces = encode_split(tokenizer, text)
+        print(f"预览第 {i + 1} 篇 pieces=", pieces[:12], "...")
+        preview_ids, _ = texts_to_input_ids(tokenizer, text, device=device)
+        print(f"[预览] tokens: {preview_ids.shape[1]}, shape: {tuple(preview_ids.shape)}\n")
+
+
+def _sample_batch_corpus_indices(corpus_len: int, batch_size: int) -> list[int]:
+    """从 corpus 无放回抽 batch_size 个下标；语料不足时取全部（不重复）。"""
+    k = min(batch_size, corpus_len)
+    return random.sample(range(corpus_len), k=k)
+
+
+def _format_batch_corpus_indices(indices: list[int]) -> str:
+    return ", ".join(f"seq[{i}]→corpus第{j + 1}篇" for i, j in enumerate(indices))
 
 
 def run_train_loop(
-    model: ToyLLMWithEmbed,
+    model: ToyForCausalLM,
     *,
     cfg: TrainConfig,
     corpus: list[str],
@@ -191,8 +201,16 @@ def run_train_loop(
     print("loss = CrossEntropy；位置 i 的 logits 预测 input_ids[i+1]")
     print("判据：loss 能否下降；末层 Attention max 能否离开 ~1/seq_len（僵死=均匀）\n")
 
+    if cfg.batch_size > len(corpus):
+        print(
+            f"  注意: batch_size={cfg.batch_size} > 语料篇数={len(corpus)}，"
+            f"每 step 实际只用 {len(corpus)} 条（无放回、不重复）\n"
+        )
+
     for step in range(cfg.train_steps):
-        batch_texts = random.choices(corpus, k=cfg.batch_size)
+        batch_indices = _sample_batch_corpus_indices(len(corpus), cfg.batch_size)
+        batch_texts = [corpus[i] for i in batch_indices]
+        print(f"Step {step} | batch 语料下标: {_format_batch_corpus_indices(batch_indices)}")
         if cfg.use_crop:
             batch_ids = [
                 random_crop_text(tokenizer, t, min_len=cfg.crop_min, max_len=cfg.crop_max)
@@ -205,26 +223,27 @@ def run_train_loop(
             input_ids, attention_mask = texts_to_input_ids(
                 tokenizer, batch_texts, device=device
             )
-        detail = step == cfg.detail_step
+        ds = cfg.detail_steps
+        if ds is True:
+            log_detail = True
+        elif ds is False or ds is None:
+            log_detail = False
+        else:
+            log_detail = step in ds
 
-        if detail:
-            print("\n" + "=" * 75)
-            print(f"详细追踪 Step {step} | 前向 Layer 0 → {cfg.n_layers - 1}")
-            print("=" * 75)
-
-        logits = model(input_ids, log_stats=detail)
+        logits = model(input_ids, log_stats=log_detail)
         loss = next_token_cross_entropy(logits, input_ids, attention_mask)
 
         hooks: list = []
-        if detail:
+        if log_detail:
             print(f"\n  ▼▼▼ 反向传播（Layer {cfg.n_layers - 1} → 0）▼▼▼")
-            hooks = _attach_block_backward_hooks(model.toyllm)
+            hooks = _attach_block_backward_hooks(model.toy)
 
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
 
-        if detail:
-            _print_layer_weight_grads(model.toyllm)
+        if log_detail:
+            _print_layer_weight_grads(model.toy)
             for h in hooks:
                 h.remove()
 
@@ -251,7 +270,7 @@ def run_train_loop(
     print(f"训练完成:  device={device}  |  steps={cfg.train_steps}\n")
 
 
-def run(cfg: TrainConfig) -> ToyLLMWithEmbed:
+def run(cfg: TrainConfig) -> ToyForCausalLM:
     device = get_device(cfg.device)
     real_stdout, log_fp = redirect_stdout_to_log(cfg.log_path)
     t_run0 = time.perf_counter()
@@ -291,7 +310,7 @@ def run(cfg: TrainConfig) -> ToyLLMWithEmbed:
         _print_corpus_preview(tokenizer, corpus, device=device)
 
         torch.manual_seed(cfg.seed)
-        model = ToyLLMWithEmbed(vocab_size, dim=cfg.dim, n_layers=cfg.n_layers).to(device)
+        model = ToyForCausalLM(vocab_size, dim=cfg.dim, n_layers=cfg.n_layers).to(device)
         run_train_loop(model, cfg=cfg, corpus=corpus, tokenizer=tokenizer, device=device)
 
         if cfg.save_ckpt:

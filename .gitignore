@@ -3,3 +3,4 @@ log
 data/
 checkpoints/
 .vscode/
+.cursor/

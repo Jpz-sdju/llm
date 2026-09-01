@@ -1,4 +1,4 @@
-"""模型输入工具：token id → Embedding → ToyLLM。"""
+﻿"""≈ Qwen3ForCausalLM 包装 + 训练/推理辅助（pad、续写、ckpt）。"""
 
 from __future__ import annotations
 
@@ -8,12 +8,12 @@ import torch
 import torch.nn as nn
 
 from tokenizer_setup import decode, encode
-from toyllm import ToyLLM, init_embedding_
+from toyllm import ToyLLM
 
 
 def save_checkpoint(
     path: Path | str,
-    model: ToyLLMWithEmbed,
+    model: ToyForCausalLM,
     *,
     tokenizer_id: str,
     train_steps: int | None = None,
@@ -26,7 +26,7 @@ def save_checkpoint(
         "config": {
             "vocab_size": model.vocab_size,
             "dim": model.dim,
-            "n_layers": model.toyllm.n_layers,
+            "n_layers": model.toy.n_layers,
             "tokenizer_id": tokenizer_id,
         },
     }
@@ -40,13 +40,13 @@ def load_checkpoint(
     path: Path | str,
     *,
     device: torch.device | str = "cpu",
-) -> tuple[ToyLLMWithEmbed, dict]:
+) -> tuple[ToyForCausalLM, dict]:
     """从 checkpoint 恢复模型；返回 (model, meta dict，含 config + train_steps 等)。"""
     ckpt = torch.load(Path(path), map_location=device, weights_only=False)
     cfg = dict(ckpt["config"])
     if "train_steps" in ckpt:
         cfg["train_steps"] = ckpt["train_steps"]
-    model = ToyLLMWithEmbed(
+    model = ToyForCausalLM(
         cfg["vocab_size"],
         dim=cfg["dim"],
         n_layers=cfg["n_layers"],
@@ -57,8 +57,8 @@ def load_checkpoint(
     return model, cfg
 
 
-class ToyLLMWithEmbed(nn.Module):
-    """Qwen tokenizer 的 id → Embedding → ToyLLM → lm_head（weight tying），用于 next-token 预测。"""
+class ToyForCausalLM(nn.Module):
+    """≈ Qwen3ForCausalLM：self.toy(=ToyLLM 主干) + lm_head（weight tying）。"""
 
     def __init__(
         self,
@@ -69,17 +69,14 @@ class ToyLLMWithEmbed(nn.Module):
         super().__init__()
         self.vocab_size = vocab_size
         self.dim = dim
-        self.embed = nn.Embedding(vocab_size, dim)
-        self.toyllm = ToyLLM(dim, n_layers)
+        self.toy = ToyLLM(vocab_size, dim, n_layers)
         self.lm_head = nn.Linear(dim, vocab_size, bias=False)
-        init_embedding_(self.embed)
-        # Weight tying：输出头与词嵌入共享同一份 weight
-        self.lm_head.weight = self.embed.weight
+        # Weight tying：lm_head ↔ toy.embed_tokens（同 Qwen3）
+        self.lm_head.weight = self.toy.embed_tokens.weight
 
     def forward(self, input_ids: torch.Tensor, log_stats: bool = False) -> torch.Tensor:
         """input_ids (B, L) → logits (B, L, vocab_size)；位置 i 预测 token i+1。"""
-        x = self.embed(input_ids)
-        hidden = self.toyllm(x, log_stats=log_stats)
+        hidden = self.toy(input_ids, log_stats=log_stats)
         return self.lm_head(hidden)
 
 
@@ -116,24 +113,11 @@ def texts_to_input_ids(
     """文本 encode 并 pad → input_ids (B, L), attention_mask (B, L)。单条 str 也走这里。"""
     if isinstance(texts, str):
         texts = [texts]
-
-    batch_ids = [encode(tokenizer, t) for t in texts]
-    pad_id = tokenizer.pad_token_id
-    max_len = max(len(ids) for ids in batch_ids)
-
-    input_ids = []
-    attention_mask = []
-    for ids in batch_ids:
-        pad_len = max_len - len(ids)
-        input_ids.append(ids + [pad_id] * pad_len)
-        attention_mask.append([1] * len(ids) + [0] * pad_len)
-
-    ids_t = torch.tensor(input_ids, dtype=torch.long)
-    mask_t = torch.tensor(attention_mask, dtype=torch.long)
-    if device is not None:
-        ids_t = ids_t.to(device)
-        mask_t = mask_t.to(device)
-    return ids_t, mask_t
+    return ids_lists_to_input_ids(
+        tokenizer,
+        [encode(tokenizer, t) for t in texts],
+        device=device,
+    )
 
 
 def ids_lists_to_input_ids(
@@ -163,7 +147,7 @@ def ids_lists_to_input_ids(
 
 @torch.no_grad()
 def greedy_continue(
-    model: ToyLLMWithEmbed,
+    model: ToyForCausalLM,
     tokenizer,
     prompt: str,
     n_tokens: int,
@@ -184,7 +168,7 @@ def greedy_continue(
 
 
 def interactive_ask(
-    model: ToyLLMWithEmbed,
+    model: ToyForCausalLM,
     tokenizer,
     *,
     device: torch.device,
