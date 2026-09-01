@@ -8,6 +8,7 @@ import random
 import shutil
 import subprocess
 import sys
+from datetime import datetime
 from pathlib import Path
 from typing import TextIO
 
@@ -19,7 +20,7 @@ os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
 from transformers import AutoTokenizer
 
 QWEN_TOKENIZER_ID = "Qwen/Qwen3-0.6B"
-DEFAULT_LOG_PATH = Path("log")
+DEFAULT_LOG_DIR = Path("log")
 
 TINYHELEN_REPO_ID = "fzmnm/TinyHelen-zh"
 TINYHELEN_NEWS_FILE = "TinyNews-zh_000.jsonl"
@@ -28,10 +29,19 @@ TINYHELEN_DATA_DIR = PROJECT_ROOT / "data" / "TinyHelen-zh"
 TINYHELEN_NEWS_PATH = TINYHELEN_DATA_DIR / TINYHELEN_NEWS_FILE
 
 
-def redirect_stdout_to_log(log_path: Path | str = DEFAULT_LOG_PATH) -> tuple[TextIO, TextIO]:
+def make_run_log_path(log_dir: Path | str = DEFAULT_LOG_DIR) -> Path:
+    """在 log 目录下创建带时间戳的日志文件路径，例如 log/run_20260901_153045.log。"""
+    directory = Path(log_dir)
+    directory.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    return directory / f"run_{stamp}.log"
+
+
+def redirect_stdout_to_log(log_path: Path | str) -> tuple[TextIO, TextIO]:
     """训练阶段：stdout 只写 log 文件（行缓冲，便于实时看进度）。返回 (原 stdout, log 文件句柄)。"""
     path = Path(log_path)
-    print(f"训练中，stdout → {path}（终端静默；进度见 log）", file=sys.__stdout__)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    print(f"训练中，stdout → {path}（终端静默；进度见该 log）", file=sys.__stdout__)
     # buffering=1：按行立刻落盘，避免「训练很久但 log 一直是空」
     log_fp = open(path, "w", encoding="utf-8", buffering=1)
     real_stdout = sys.stdout

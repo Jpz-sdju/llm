@@ -1,10 +1,9 @@
-﻿"""TinyNews next-token 训练逻辑（由 attention_demo.py 调用）。"""
+﻿"""TinyNews next-token 训练循环与 TrainConfig。"""
 
 from __future__ import annotations
 
 import random
 import sys
-import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -13,30 +12,17 @@ import torch
 from model_input import (
     ToyForCausalLM,
     ids_lists_to_input_ids,
-    interactive_ask,
-    load_checkpoint,
     next_token_cross_entropy,
-    save_checkpoint,
     texts_to_input_ids,
 )
-from tokenizer_setup import embedding_vocab_size, encode_split
 from toyllm import ToyLLM, causal_mask, fmt
-from utils import (
-    QWEN_TOKENIZER_ID,
-    ensure_tinyhelen_news,
-    get_device,
-    load_qwen_tokenizer,
-    load_tinyhelen_texts,
-    random_crop_text,
-    redirect_stdout_to_log,
-    restore_stdout,
-)
+from utils import random_crop_text
 
 
 @dataclass
 class TrainConfig:
     device: str = "auto"
-    log_path: Path = Path("log")
+    log_dir: Path = Path("log")
 
     dim: int = 128
     n_layers: int = 16
@@ -151,19 +137,6 @@ def _sync_device(device: torch.device) -> None:
         torch.cuda.synchronize()
 
 
-def _print_corpus_preview(
-    tokenizer,
-    corpus: list[str],
-    *,
-    device: torch.device,
-) -> None:
-    for i, text in enumerate(corpus):
-        _, pieces = encode_split(tokenizer, text)
-        print(f"预览第 {i + 1} 篇 pieces=", pieces[:12], "...")
-        preview_ids, _ = texts_to_input_ids(tokenizer, text, device=device)
-        print(f"[预览] tokens: {preview_ids.shape[1]}, shape: {tuple(preview_ids.shape)}\n")
-
-
 def _sample_batch_corpus_indices(corpus_len: int, batch_size: int) -> list[int]:
     """从 corpus 无放回抽 batch_size 个下标；语料不足时取全部（不重复）。"""
     k = min(batch_size, corpus_len)
@@ -263,74 +236,5 @@ def run_train_loop(
             sys.stdout.flush()
             print(f"  … Step {step}/{cfg.train_steps}", file=sys.__stdout__, flush=True)
 
-    print("-" * 75)
-    print("读结果：loss 明显下降、A.max 拉开 → Attention 在学；loss 不降 / A.max≈1/seq_len → 仍僵死")
-    print("-" * 75)
     _sync_device(device)
     print(f"训练完成:  device={device}  |  steps={cfg.train_steps}\n")
-
-
-def run(cfg: TrainConfig) -> ToyForCausalLM:
-    device = get_device(cfg.device)
-    real_stdout, log_fp = redirect_stdout_to_log(cfg.log_path)
-    t_run0 = time.perf_counter()
-    print(f"=== 运行设备: {device}  (DEVICE={cfg.device}) ===\n")
-
-    tokenizer = load_qwen_tokenizer()
-    vocab_size = embedding_vocab_size(tokenizer)
-    print(f"\ntokenizer.vocab_size = {tokenizer.vocab_size}")
-    print(f"embedding 行数       = {vocab_size}\n")
-
-    if cfg.load_ckpt is not None:
-        ckpt_path = Path(cfg.load_ckpt)
-        print(f"跳过训练，加载 checkpoint: {ckpt_path.resolve()}")
-        model, ckpt_cfg = load_checkpoint(ckpt_path, device=device)
-        print(
-            f"  dim={ckpt_cfg['dim']}, layers={ckpt_cfg['n_layers']}, "
-            f"vocab={ckpt_cfg['vocab_size']}, tokenizer={ckpt_cfg['tokenizer_id']}"
-        )
-        if ckpt_cfg.get("train_steps") is not None:
-            print(f"  训练 step 数（记录）: {ckpt_cfg['train_steps']}")
-        elapsed = time.perf_counter() - t_run0
-        restore_stdout(
-            real_stdout,
-            log_fp,
-            f"已加载 checkpoint（{elapsed:.2f} s）|  日志: {cfg.log_path}",
-            "下面进入交互问答\n" if cfg.interactive_after else "",
-        )
-    else:
-        news_path = ensure_tinyhelen_news()
-        all_corpus = load_tinyhelen_texts(news_path)
-        corpus = all_corpus if cfg.corpus_n is None else all_corpus[: cfg.corpus_n]
-        print(f"TinyNews 语料: {news_path}")
-        if cfg.corpus_n is None:
-            print(f"  训练篇数: {len(corpus)}  （全部有效篇）\n")
-        else:
-            print(f"  训练篇数: {len(corpus)}  （固定取 JSONL 前 {cfg.corpus_n} 篇）\n")
-        _print_corpus_preview(tokenizer, corpus, device=device)
-
-        torch.manual_seed(cfg.seed)
-        model = ToyForCausalLM(vocab_size, dim=cfg.dim, n_layers=cfg.n_layers).to(device)
-        run_train_loop(model, cfg=cfg, corpus=corpus, tokenizer=tokenizer, device=device)
-
-        if cfg.save_ckpt:
-            saved = save_checkpoint(
-                cfg.ckpt_path,
-                model,
-                tokenizer_id=QWEN_TOKENIZER_ID,
-                train_steps=cfg.train_steps,
-            )
-            print(f"已保存 checkpoint → {saved.resolve()}\n")
-
-        elapsed = time.perf_counter() - t_run0
-        restore_stdout(
-            real_stdout,
-            log_fp,
-            f"训练完成: {elapsed:.2f} s  |  日志: {cfg.log_path}",
-            "下面进入交互问答\n" if cfg.interactive_after else "",
-        )
-
-    if cfg.interactive_after:
-        interactive_ask(model, tokenizer, device=device, max_new_tokens=cfg.gen_tokens)
-
-    return model

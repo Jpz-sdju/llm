@@ -47,10 +47,15 @@ def causal_mask(seq_len: int, device: torch.device) -> torch.Tensor:
 
 
 def _print_vec_stats(label: str, vec: torch.Tensor) -> None:
-    mean = vec.mean().item()
-    std = vec.std(unbiased=False).item()
-    rms = torch.sqrt((vec ** 2).mean()).item()
-    print(f"  │   {label} mean={fmt(mean)} | std={fmt(std)} | rms={fmt(rms)}")
+    """mean/std/rms 只对有限值统计（跳过因果 mask 的 ±inf/NaN）。"""
+    finite = vec[torch.isfinite(vec)]
+    if finite.numel() == 0:
+        mean = std = rms = float("nan")
+    else:
+        mean = finite.mean().item()
+        std = finite.std(unbiased=False).item() if finite.numel() > 1 else 0.0
+        rms = torch.sqrt((finite ** 2).mean()).item()
+    print(f"  │   {label} mean={fmt(mean)} | std={fmt(std)} | rms={fmt(rms)} | finite={finite.numel()}/{vec.numel()}")
     print(f"  │   {vec.tolist()}")
 
 
@@ -61,8 +66,12 @@ def _print_mat(name: str, t: torch.Tensor) -> None:
     elif t.device.type == "cuda":
         torch.cuda.synchronize()
     t = t.detach().float().contiguous().cpu().clone()
-    rms_all = torch.sqrt((t ** 2).mean()).item()
-    absmax = t.abs().max().item()
+    finite_all = t[torch.isfinite(t)]
+    if finite_all.numel() == 0:
+        rms_all = absmax = float("nan")
+    else:
+        rms_all = torch.sqrt((finite_all ** 2).mean()).item()
+        absmax = finite_all.abs().max().item()
     print(f"  │ [{name}] shape={tuple(t.shape)} | 全体 RMS={fmt(rms_all)} | absmax={fmt(absmax)}")
 
     if t.ndim == 3:

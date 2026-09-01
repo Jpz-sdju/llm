@@ -1,15 +1,16 @@
-"""ToyLLM 唯一入口：参数在此改；训练逻辑在 train.py。"""
+"""ToyLLM 唯一入口：参数在此改；总调度见 pipeline.py。"""
 
 from pathlib import Path
 
-from train import TrainConfig, run
+from pipeline import run
+from train import TrainConfig
 
 # ── Demo 参数（以后改动改这里即可）──────────────────────────────────────────────────
 
 # 只改这一行切换配置： "XPU_DEBUG" | "GPU_TRAIN"
 PROFILE = "XPU_DEBUG"
 
-LOG_PATH = Path(__file__).resolve().parent / "log"
+LOG_DIR = Path(__file__).resolve().parent / "log"
 CKPT_PATH = Path("checkpoints/toyllm.pt")
 LOAD_CKPT: Path | None = None  # 设路径则跳过训练，直接加载权重
 SEED = 42
@@ -61,7 +62,7 @@ if __name__ == "__main__":
     run(
         TrainConfig(
             device=cfg["device"],
-            log_path=LOG_PATH,
+            log_dir=LOG_DIR,
             dim=cfg["dim"],
             n_layers=cfg["n_layers"],
             seed=SEED,
