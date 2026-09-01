@@ -7,8 +7,7 @@ from train import TrainConfig
 
 # ── Demo 参数（以后改动改这里即可）──────────────────────────────────────────────────
 
-# 只改这一行切换配置： "XPU_DEBUG" | "GPU_TRAIN"
-PROFILE = "XPU_DEBUG"
+PROFILE = "GPU_DEBUG"
 
 LOG_DIR = Path(__file__).resolve().parent / "log"
 CKPT_PATH = Path("checkpoints/toyllm.pt")
@@ -20,6 +19,23 @@ GEN_TOKENS = 32
 # 核显：小模型、少步、开 detail，方便看矩阵
 XPU_DEBUG = dict(
     device="xpu",
+    dim=32,
+    n_layers=4,
+    corpus_n=1,
+    batch_size=1,
+    use_crop=False,
+    train_steps=2,
+    lr=1e-3,
+    log_every=1,
+    crop_min=128,
+    crop_max=512,
+    detail_steps=[0],  # False=关 | True=每步 | [0,1]=指定 step
+    save_ckpt=False,
+)
+
+# 大卡：DBBUG
+GPU_DEBUG = dict(
+    device="cuda",
     dim=32,
     n_layers=4,
     corpus_n=1,
@@ -51,7 +67,7 @@ GPU_TRAIN = dict(
     save_ckpt=True,
 )
 
-_PROFILES = {"XPU_DEBUG": XPU_DEBUG, "GPU_TRAIN": GPU_TRAIN}
+_PROFILES = {"XPU_DEBUG": XPU_DEBUG, "GPU_DEBUG": GPU_DEBUG, "GPU_TRAIN": GPU_TRAIN}
 if PROFILE not in _PROFILES:
     raise ValueError(f"未知 PROFILE={PROFILE!r}，可选: {list(_PROFILES)}")
 cfg = _PROFILES[PROFILE]
